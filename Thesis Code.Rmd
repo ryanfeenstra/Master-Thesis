@@ -1,0 +1,675 @@
+---
+title: "Thesis_Code_Annotated"
+output: pdf_document
+date: "2024-07-13"
+---
+
+```{r, eval=FALSE}
+#Loading Libraries
+library(polyglotr)
+library(dplyr)
+library(caret)
+library(tm)
+library(SnowballC)
+library(xgboost)
+library(shapviz)
+library(iml)
+library(treeshap)
+library(ggplot2)
+library(tokenizers)
+library(tibble)
+library(tidyverse)
+library(tidytext)
+library(SnowballC)
+library(tm)
+library(stringi)
+library(ggrepel)
+library(wordcloud)
+library(quanteda)
+library(caret)
+library(smacof)
+library(ggfortify)
+library(ggthemes)
+library(factoextra)
+library(tidyr)
+library(lubridate)
+library(slam)
+library(LDAvis)
+library(servr)
+library(textclean)
+library(topicmodels)
+library(textmineR)
+library(syuzhet)
+library(sentimentr)
+library(progress)
+library(DiagrammeR)
+```
+
+```{r,eval=FALSE}
+#Data Loading
+setwd("/Users/ryanfeenstra/Desktop/Master Thesis/Coding/Project Returns")
+#Setting the working directory
+All_Orders <- read.csv("All_Orders.csv") #Reading the data in
+Return_Table <- read.csv("Return_Table.csv") #Reading the data in
+influencer_category <- read.csv("influencer_category.csv") #Reading the data in
+All_Customers <- read.csv("All_Customers.csv") #Reading the data in
+
+Return_Table <- Return_Table %>%
+  distinct(orderId, .keep_all = TRUE) #Keeping all distinct return orders
+```
+
+
+```{r,eval=FALSE}
+#Data Manipulation
+final_data <- merge(Return_Table, All_Orders,
+                    by.x = "orderId",
+                    by.y = "orderid") 
+#Merging the return table with the all orders table
+orders <- aggregate(orderid ~ customerId, data = All_Orders,
+                    FUN = length) #Making a table of all orders per customer id
+names(orders)[names(orders) == "orderid"] <- "number of orders"
+#Changing names of columns
+Return_Table$orderId <- as.numeric(Return_Table$orderId)
+#Changing the type of the orderid
+returns <- aggregate(orderId ~ customerId,
+                     data = final_data, FUN = length) #Making a table of all
+#orders per customer id from the merged data
+names(returns) <- c("customerId", "returns") #Changing the names of columns
+order_comb <- merge(orders,returns,
+                    by = "customerId",
+                    all.x = TRUE) #merging the orders and returns tables
+order_comb$returns[is.na(order_comb$returns)] <- 0
+#Setting all n/a values to zero
+order_comb$return_rate <- order_comb$returns/order_comb$`number of orders`
+#Making a return rate variable in order_comb
+All_Customers <- merge(All_Customers, order_comb[,c("customerId",
+                                                    "number of orders",
+                                                    "returns","return_rate")],
+                       by = "customerId", all.x = TRUE)
+#Merging the all_customers and order_comb data
+All_Customers$`number of orders`[is.na(All_Customers$`number of orders`)] <- 0
+#setting all n/a values to zero
+All_Customers$returns[is.na(All_Customers$returns)] <- 0
+#Setting all n/a values to zero
+All_Customers$return_rate[is.na(All_Customers$return_rate)] <- 0
+#Setting all n/a values to zero
+final_data <- merge(final_data, All_Customers,
+                    by.x = "customerId",
+                    by.y = "customerId") #Merging final_data and All_Customers
+final_data_no_in <- final_data #making a copy of the final_data data
+final_data$voucher <- tolower(final_data$voucher)
+#Making the voucher column lowercase
+influencer_category$profile_name <- tolower(influencer_category$profile_name)
+#Making the column lowercase 
+final_data <- merge(final_data, influencer_category,
+                    by.x = ("voucher"),
+                    by.y = "profile_name") #Merging the final_data and
+#influencer_category data
+final_data <- subset(final_data, select = -c(firstName,X,zipCode))
+#Removing unnecessary columns for privacy
+final_data_no_in <- subset(final_data_no_in, select = -c(firstName,zipCode))
+#Removing unnecessary columns for privacy
+names(final_data)[names(final_data) == "comment"] <- "return_reason"
+#Renaming column
+names(final_data_no_in)[names(final_data_no_in) == "comment"]
+<- "return_reason"
+#Renaming column
+final_data$return_reason[final_data$return_reason == "null"]
+<- "no return reason mentioned"
+#Replacing null values
+final_data_no_in$return_reason[final_data_no_in$return_reason == "null"]
+<- "no return reason mentioned" #Replacing null values
+All_Orders$voucher <- tolower(All_Orders$voucher) #Making the column lowercase
+influencer_category$profile_name <- tolower(influencer_category$profile_name)
+#Making the column lowercase
+order_inf <- merge(All_Orders, influencer_category, by.x = "voucher",
+                   by.y = "profile_name")
+#Merging the all_orders and influencer_category data
+order_inf <- merge(order_comb, order_inf, by.x = "customerId",
+                   by.y = "customerId")
+#Merging the order_comb and order_inf data
+order_inf <- merge(order_inf, All_Customers[c("country","customerId")],
+                   by.x = "customerId", by.y = "customerId")
+#Merging the order_inf and Al_customers data
+
+final_data$return_reason <- gsub(".*Return Reason: ", "",
+                                 final_data$return_reason)
+#Formatting the return reason
+reasons_translated <- sapply(final_data$return_reason,
+                             function(x) google_translate(x,
+                                                          target_language
+                                                          = "en"))
+#Applying the google translate function to the return reasons
+final_data$reasons_translated <- reasons_translated #Adding the translated column
+
+final_data_no_in$return_reason <- gsub(".*Return Reason: ", "",
+                                       final_data_no_in$return_reason)
+#Formatting the return reason
+reasons_translated2 <- sapply(final_data_no_in$return_reason,
+                              function(x) google_translate(x,
+                                                           target_language 
+                                                           = "en"))
+#Applying the google translate function to the return reasons
+final_data_no_in$reasons_translated <- reasons_translated2
+#Adding the translated column
+
+final_data$reasons_translated <- tolower(final_data$reasons_translated)
+#Making the column lowercase
+other_reviews <- c() #Making a table
+other_reviews_id <- c() #Making a table
+count = 1 #Setting a count variable
+for (x in final_data$reasons_translated) {
+  if (grepl("^(?i)(another|other)[[:space:]](reason|cause)[[:space:]]?- ", x)) {
+    other_reviews <- c(other_reviews, x)
+    other_reviews_id <- c(other_reviews_id, final_data$orderId[count])
+  }
+  count = count + 1
+} #Adding all "other reason" reviews and their ids to tables
+other_reviews_df <- data.frame(orderId = other_reviews_id,
+                               reasons_translated = other_reviews)
+#combining tables to make a data frame
+
+actual_reason <- subset(final_data, 
+                      !grepl("no return reason mentioned", reasons_translated) & 
+                        !(reasons_translated %in% other_reviews))
+#taking a subset of the data where the return reason is not
+"no return reason mentioned"
+actual_reason$reasons_translated <- tolower(actual_reason$reasons_translated)
+"Making the column lowercase"
+
+reason_category <- function(group_reason) {
+  group_reason <- stringi::stri_trans_general(group_reason, "Latin-ASCII")
+  group_reason <- gsub("[\u200B]", "", group_reason)
+  if (grepl("wrong order|ordered the wrong product|ordered wrong|
+            refunded in paypal|faulty order",
+            group_reason, ignore.case = TRUE)) {
+    return("incorrect order")
+  } else if (grepl("does not fit the description|
+                   does not match description|doesn't match the description|
+                   does not match product description/images|
+                   doesn't match the product description/pictures",
+                   group_reason, ignore.case = TRUE)) {
+    return("does not match description")
+  } else if (grepl("regret purchase|i changed my opinion|
+                   i changed my mind|i regret my purchase", 
+                   group_reason, ignore.case = TRUE)) {
+    return("changed mind")
+  } else if (grepl("does not meet my expectations \\(e\\.g\\.
+  function, quality\\)|
+                   does not correspond to my values \\(e\\.g\\.
+                   functionality, quality\\)|
+                   did not meet my value expectation \\(e\\.g\\.
+  functionality, quality\\)",
+                   group_reason, ignore.case = TRUE)) {
+    return("does not meet expectations")
+  } else {
+    return("another reason")
+  }
+} #Function that cleans up a string of text and groups the text into different
+#return reason categories. 
+
+
+
+final_data$reason_grouped <- ifelse(final_data$orderId %in% actual_reason$orderId, sapply(final_data$reasons_translated,                                                            reason_category),final_data$reasons_translated) 
+#Applies the reason_grouped function to strings if the orderid matches an
+#order id in the actual_reason table
+
+```
+
+```{r,eval=FALSE}
+#Analysis
+order_value <- sum(All_Orders$price, na.rm = TRUE) 
+#Calculates the total value of the orders
+amount_of_orders <- sum(All_Customers$`number of orders`)
+#Calculates the total amount of orders
+amount_of_returns <- sum(All_Customers$returns)
+#Calculates the total amount of returns
+returns_value <- sum(Return_Table$Value, na.rm = TRUE)
+#Calculates the total value of returns
+returns_percentage <- (returns_value/order_value) * 100 
+#Calculates the percentage of returns
+return_rate_gen <- (amount_of_returns/amount_of_orders) * 100 
+#Calculates the amount of returns over the amount of orders
+order_value
+general_table <- data.frame(Metrics = c("Total Order Value",
+                                        "Total Returns Value",
+                                        "Share of Value (Returns)", 
+                                        "Amount of Total Orders",
+                                        "Amount of Total Returns",
+                                        "Return Rate"),
+                            Values = c(order_value, returns_value,
+                                       returns_percentage,
+                                       amount_of_orders,
+                                       amount_of_returns, return_rate_gen))
+#Creates a data frame with all the measures
+general_table$Values <- format(general_table$Values,
+                               scientific = FALSE, big.mark = ",")
+#Formates the values to scientific notation
+general_table #displays the table
+
+#Amount of Influencers per Type
+influencer_n <- table(influencer_category$influencer_class)
+#creates a table of of influencers per class
+influencer_n #displays the table
+
+
+#Amount of Returns and Return Rate per Influencer Category
+returns_per_inf <- aggregate(returns ~ influencer_class,
+                             data = final_data, FUN = sum)
+#calculates the amount of returns per influencer class
+returns_per_inf #Displays the table
+
+rate_per_inf <- aggregate(return_rate ~ influencer_class,
+                          data = order_inf, FUN = mean)
+#Calculates the average return rate per influencer class
+rate_per_inf$return_rate <- rate_per_inf$return_rate * 100
+#Makes the return rate a percentage
+rate_per_inf #Displays the table
+
+#Turn chr into factors
+final_data$country <- as.factor(final_data$country) #Turns column into factors
+final_data$gender <- as.factor(final_data$gender) #Turns column into factors
+final_data$influencer_class <- as.factor(final_data$influencer_class)
+#Turns column into factors
+
+order_flag <- other_reviews_df$orderId
+#Stores the order Id of all orders in the other reviews data frame
+final_data_analysis <- final_data[!final_data$orderId %in% order_flag,]
+#Removes all "other" orders from the fianl data dataset and assigns a new dataset
+final_data_analysis$reason_grouped <- as.factor(final_data_analysis$
+                                                  reason_grouped)
+#Turns the column into a factor
+
+table(final_data_analysis$reason_grouped) #Prints a table of all return reasons
+
+
+linear_modelt <- lm(return_rate ~ Quantity + Value + price + priceDiscount + 
+                     gender + `number of orders`  + 
+                     posts + follower + following +
+                      influencer_class + reason_grouped, 
+                   data = final_data_analysis) #Linear regression
+
+summary(linear_modelt) #Prints the summary of the regression
+
+#XGBoost Influencer Data
+final_data_analysis <- subset(final_data_analysis,
+                              select = -c(reasons_translated,newsletter,
+                                          city,birthDate,
+                                                               sku,
+                                          paymentDescription,name,
+                                                               orderDate,return_reason,voucher,orderId,customerId,country))
+#Removes all columns not appropriate for XGBoost
+final_data_analysis$reason_grouped <- as.integer(final_data_analysis$
+                                                   reason_grouped) - 1
+#Turning reason_grouped to a numerical variable
+final_data_analysis_dum <- model.matrix(reason_grouped ~.,
+                                        final_data_analysis)[,-1]
+#Making all factor variables into dummy variables
+
+final_data_analysis_target <- final_data_analysis$reason_grouped
+#Sets the target variable
+
+set.seed(777) #Setting the seed
+sample_size_index <- createDataPartition(final_data_analysis_target,
+                                         p = .8,list = FALSE, times =1)
+#Creates a test and train sample 
+XG_inf_train <- final_data_analysis_dum[sample_size_index,]
+#allocating data to sample
+XG_inf_test <- final_data_analysis_dum[-sample_size_index,]
+#allocating data to sample
+XG_inf_trainlabel <- final_data_analysis_target[sample_size_index]
+#allocating data to sample
+XG_inf_testlabel <- final_data_analysis_target[-sample_size_index]
+#allocating data to sample
+
+XG_inf_train_matrix <- xgb.DMatrix(data = XG_inf_train,
+                                   label = XG_inf_trainlabel)
+#Making a train matrix 
+XG_inf_test_matrix <- xgb.DMatrix(data = XG_inf_test,
+                                  label = XG_inf_testlabel)
+#Making a test matrix
+
+params <- list(
+  objective = "multi:softmax",  # Softmax for multi-class classification
+  num_class = length(unique(final_data_analysis_target)),  # Number of classes
+  eval_metric = "mlogloss",
+  tree_method = "hist"  # Use histogram-based algorithm
+) #Sets parameters 
+
+param_grid <- expand.grid(
+  max_depth = c(3,6,9),                 
+  eta = c(0.01, 0.05, 0.1, 0.2),     # Learning rate
+  gamma = c(0, 0.2, 0.3),      # Minimum loss reduction
+  colsample_bytree = c(0.5, 0.7,0.9),# Subsample ratio of columns
+  min_child_weight = c(1,3,5), # Minimum sum of instance weight
+  subsample = c(0.5, 0.6,0.7)        # Subsample ratio of the training instance
+) #Sets paramterers
+
+grid_search_xgb <- function(param_grid, train_data, nrounds, nfold) {
+  parameters_to_use <- NULL
+  accuracy <- 0 #makes a grid search function
+  
+  for (i in 1:nrow(param_grid)) {
+    parameters <- as.list(param_grid[i, ])
+    parameters$objective <- "multi:softprob"
+    parameters$num_class <- length(unique(final_data_analysis_target))
+    parameters$eval_metric <- "mlogloss"
+    
+    # Cross-validation
+    cv <- xgb.cv(params = parameters, 
+                 data = train_data, 
+                 nrounds = nrounds, 
+                 nfold = nfold, 
+                 verbose = FALSE,
+                 prediction = TRUE)
+    
+    accuracy_check <- max(cv$evaluation_log$test_mlogloss_mean)
+    
+    if (accuracy_check > accuracy) {
+      accuracy <- accuracy_check
+      parameters_to_use <- parameters
+    }
+  }
+  return(list(best_params = parameters_to_use, best_accuracy = accuracy))
+} #Function to perform a grid search and find ideal parameters 
+
+# Perform grid search
+grid_search_results <- grid_search_xgb(param_grid,
+                                       XG_inf_train_matrix,
+                                       nrounds = 100, nfold = 5)
+#Stores the grid search results
+
+# Print the best parameters and accuracy
+print(grid_search_results$best_params) #Stores the parameters
+print(grid_search_results$best_accuracy) #Stores the grid search accuracy
+
+params2 <- list(
+  objective = "multi:softmax",  # Softmax for multi-class classification
+  num_class = length(unique(final_data_analysis_target)),  # Number of classes
+  eval_metric = "mlogloss",
+  tree_method = "hist",
+  max_depth = 3,
+  eta = 0.01,
+  gamma = 0.2,
+  colsample_bytree = 0.5,
+  min_child_weight = 5,
+  subsample = 0.5
+  
+) #New set of parameters 
+
+xgb_model_inf <- xgb.train(
+  params = params,
+  data = XG_inf_train_matrix,
+  nrounds = 100,
+  watchlist = list(val = XG_inf_test_matrix, train = XG_inf_train_matrix),
+  early_stopping_rounds = 10,
+  verbose = 1
+) #Training the XGBoost model
+
+xgb_model_inf_pred <- predict(xgb_model_inf, XG_inf_test_matrix)
+#XGModel predictions
+xgb_model_inf_pred_fac <- factor(xgb_model_inf_pred,
+                                 levels = 0:(length(
+                                   unique(final_data_analysis_target)) - 1))
+#Turns the predictions back into a factor 
+xgb_model_inf_pred_labels <- factor(XG_inf_testlabel,
+                                    levels = 0:(length(unique
+                                                       (final_data_analysis_target))
+                                                - 1))
+#Adds labels to the prediciton
+
+xgb_model_inf_confusion_matrix <- confusionMatrix(xgb_model_inf_pred_fac,
+                                                  xgb_model_inf_pred_labels)
+#Creates a confusion matrix
+print(xgb_model_inf_confusion_matrix) #Prints the confusion matrix 
+
+xgb_model_inf_importance <- xgb.importance(model = xgb_model_inf)
+#Calculates the importance per variable
+xgb.plot.importance(xgb_model_inf_importance) #Prints the variable importance
+
+shap_inf <- shapviz(xgb_model_inf, X_pred = XG_inf_train)
+#Calculates the shap importance
+sv_importance(shap_inf, show_numbers = TRUE) #Prints the shap importance 
+
+xgb.plot.tree(model = xgb_model_inf, trees = 0)
+#Plots the first decision tree of the XGBoost model
+xgb.plot.tree(model = xgb_model_inf, trees = 2) 
+#Plots the third decision tree of the XGBoost model
+
+
+#Text analytics Influencer Data
+text_preprocessing_sentiment <- function(x) {
+  x <- gsub('^other reason -\\s*|^another cause -\\s*|^other cause -\\s*
+            |^another reason -\\s*', '', x, ignore.case = TRUE)
+  x <- gsub('http\\S+\\s*','', x) # Remove URLs
+  x <- gsub('#\\S+', '', x) # Remove hashtags
+  x <- gsub('<.*?>', '', x) # Remove HTML tags
+  x <- iconv(x, "UTF-8", "ASCII", sub = "") # Remove emojis
+  x <- gsub('[0-9]+', '', x) # Remove numbers
+  x <- tolower(x)  # Convert to lowercase
+  return(x)
+} #Creates a function to clean the text for later sentiment analysis
+sentiment_inf <- mutate(other_reviews_df,
+                        clean_reviews = text_preprocessing_sentiment
+                        (reasons_translated))
+#applies the preprocessing function to the reviews for sentiment analysis
+
+
+text_preprocessing_main <- function(x) {
+  x <- gsub('[[:punct:]]', ' ', x) # Remove punctuation, add space
+  x <- gsub("^[[:space:]]*|\\s*$", "", x)
+  # Remove leading and trailing whitespaces
+  x <- gsub(' +', ' ', x) # Remove extra whitespaces
+  x <- gsub('[[:cntrl:]]', '', x) # Remove controls and special characters
+} #Creates a function to clean the text
+
+non_sentiment_inf <- mutate(other_reviews_df, clean_reviews = text_preprocessing_sentiment(reasons_translated))
+#Applies the preprocessing function to the reviews
+non_sentiment_inf <- mutate(non_sentiment_inf,
+                            clean_reviews = text_preprocessing_main
+                            (clean_reviews))
+#Applies the preprocessing function to the reviews
+
+data(stop_words) #loads all stopwords
+run_slow_parts <- TRUE #Filter to run the following function or not
+if (run_slow_parts) {
+  j<-1
+  # For every row remove parts that are not meaningful from the column Review
+  for (j in 1:nrow(non_sentiment_inf)) {
+    stemmed_Review<-anti_join((non_sentiment_inf[j,
+                                                 ]
+                               %>% unnest_tokens(word,clean_reviews,
+                                                 drop=FALSE,to_lower=TRUE) )
+                              ,stop_words)
+    stemmed_Review<-(wordStem(stemmed_Review[,"word"], language = "porter"))
+    non_sentiment_inf[j,"st_review"]<-paste((stemmed_Review),collapse = " ")
+  }
+  # Save cleaned and stemmed dataset
+  save(non_sentiment_inf, file = "non_sentiment_influencer.Rdata")
+} else {load(file = "non_sentiment_influencer") 
+} #Function to stem the words within the reviews
+
+review_tdm <- non_sentiment_inf %>% unnest_tokens(word,st_review) %>%
+  count(word,orderId,sort=TRUE) %>%ungroup()%>%cast_tdm(word,orderId,n)
+#Creates a term document matrix
+counts <- rowSums(as.matrix(review_tdm)) #Counts the sum of rows
+sortedcount <- counts %>% sort(decreasing=TRUE) #Sorts the counts variable
+nwords <- 152 #Sets the amount of words in the reviews
+sortednames <- names(sortedcount[1:nwords]) #Sorts the names 
+review_dtm <- t(review_tdm)
+#Transposes the term document matrix to a document term matrix
+
+pca_non_sentiment_inf_results <- prcomp(review_dtm, scale = FALSE, rank. = 40)
+#Performs PCA analysis
+fviz_screeplot(pca_non_sentiment_inf_results,ncp=20) #Prints a screeplot
+ncomp_non_sentiment_inf<-2 #Sets the amount of components
+
+axeslist <- c(1, 2)
+fviz_pca_var(pca_non_sentiment_inf_results, axes=axeslist 
+             ,geom.var = c("arrow", "text")
+             ,col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), # colors to use
+             repel = TRUE     # Avoid text overlapping
+) #Prints the two components on a grpah
+
+rawLoadings <- pca_non_sentiment_inf_results$rotation[sortednames,
+                                                      1:ncomp_non_sentiment_inf]
+%*%
+  diag(pca_non_sentiment_inf_results$sdev,
+       ncomp_non_sentiment_inf, ncomp_non_sentiment_inf) #Calculates the loadings
+rotated_non_sentiment_inf <- varimax(rawLoadings) # rotate loading matrix
+pca_non_sentiment_inf_results$rotation <- rotated_non_sentiment_inf$loadings
+# Saves the rotated results
+pca_non_sentiment_inf_results$x <- scale(pca_non_sentiment_inf_results$
+                                           x[,1:ncomp_non_sentiment_inf]) %*%
+  rotated_non_sentiment_inf$rotmat #Scales the rotated loadings
+
+axeslist <- c(1, 2)
+fviz_pca_var(pca_non_sentiment_inf_results, axes=axeslist 
+             ,geom.var = c("text", "arrow")
+             ,col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#C1CAD6", "#CB429F", "red"), # colors to use
+             repel = TRUE,
+             xlim = c(-0.8, 0.8),
+             ylim = c(-0.8, 0.8)
+) #Prints the rotated loadings on a graph
+
+
+
+top_words_per_component <- function(loadings, n = 10) {
+  apply(loadings, 2, function(x) {
+    top_indices <- order(abs(x), decreasing = TRUE)[1:n]
+    data.frame(
+      word = rownames(loadings)[top_indices],
+      loading = x[top_indices]
+    )
+  })
+} #Calculates the most frequent words per component 
+
+top_words_no_inf <- top_words_per_component(pca_non_sentiment_inf_results
+                                            $rotation, n = 10)
+for (i in 1:ncomp_non_sentiment_inf) {
+  cat(sprintf("Top words for component %d:\n", i))
+  print(top_words_no_inf[[i]])
+  cat("\n")
+} #Prints the most frequent words per component
+
+#Sentiment analysis (sentence level)
+sentiment_inf$sentiment <- sentiment_by(get_sentences(sentiment_inf$
+                                                        clean_reviews),
+                                        lexicon::hash_sentiment_huliu)$
+  ave_sentiment #Calculates the sentiment per word in the reviews
+sentences_inf <- get_sentences(sentiment_inf[,"clean_reviews"]) 
+#Saves the sentences 
+sentence_scores_inf <- sentiment(sentences_inf)
+#Calculates the sentiment per sentence
+all_sentences_inf <- as.data.frame(unlist(sentences_inf[]))
+# Make a dataframe of all sentences
+colnames(all_sentences_inf) ="sentence" # Give name to the column
+all_sentences_inf$sentiment <- sentence_scores_inf$sentiment 
+# Add sentiment score to the sentences
+all_sentences_inf$sentence_id <- c(1:dim(all_sentences_inf)[1])
+#Adds an id to the sentences
+all_pos_sentences_inf <- all_sentences_inf %>% filter(sentiment>0)
+#Filters all positive sentences
+all_neg_sentences_inf <- all_sentences_inf %>% filter(sentiment<0) 
+#Filters all negative sentences
+
+all_neg_sentences_words_inf <- all_neg_sentences_inf  %>%
+  unnest_tokens(word, sentence) %>%
+  anti_join(stop_words, by = "word") #Stores all negative words 
+
+all_pos_sentences_words_inf<- all_pos_sentences_inf  %>%
+  unnest_tokens(word,sentence) %>%
+  anti_join(stop_words, by = "word") #Stores all positive words
+
+all_sentence_words_inf <- full_join(all_pos_sentences_words_inf
+                                    %>% count(word, sort=TRUE),
+                                    all_neg_sentences_words_inf
+                                    %>% count(word, sort=TRUE),
+                                    by="word")
+#Joins the positive and negative words
+all_sentence_words_inf = rename(all_sentence_words_inf,
+                                "positive_count" = "n.x",
+                                "negative_count" = "n.y") #Renames Columns 
+
+all_sentence_words_inf[is.na(all_sentence_words_inf$positive_count),
+                       "positive_count"]<- 0 # set missing values equal to zero
+all_sentence_words_inf[is.na(all_sentence_words_inf$negative_count),
+                       "negative_count"]<- 0 # set missing values equal to zero
+
+all_sentence_words_inf$positive_count  <- all_sentence_words_inf$positive_count/sum(all_sentence_words_inf$positive_count) 
+#Counts all positive words
+all_sentence_words_inf$negative_count  <- all_sentence_words_inf$negative_count/sum(all_sentence_words_inf$negative_count)
+#Counts all negative words
+
+all_sentence_words_inf$diff <- all_sentence_words_inf$
+  positive_count-all_sentence_words_inf$negative_count 
+# Determine difference between ratio of positive and negative sentences for each word
+
+
+all_sentence_words_inf[is.na(all_sentence_words_inf$positive_count),
+                       "positive_count"] <- 1
+# missing values: avoid division by 0
+all_sentence_words_inf[is.na(all_sentence_words_inf$negative_count),
+                       "negative_count"] <- 1
+# missing values: avoid division by 0
+
+all_sentence_words_inf$ratio <- all_sentence_words_inf$
+  positive_count/all_sentence_words_inf$negative_count 
+# Determine ratio: positive divided by negative scores for each word
+
+all_sentence_words_inf%>% #Only consider words with negative and positive score > 5,
+  #prints top 15 words based on ratio
+  mutate(word = reorder(word, -ratio)) %>%           
+  top_n(-15, ratio) %>%
+  ggplot(aes(word,ratio)) +  
+  geom_col() +
+  labs(x = NULL, y = "Ratio of word frequency (pos/neg)") +
+  coord_flip() +
+  theme(text = element_text(size = 17)) +
+  ggtitle("Specific negative words")
+
+all_sentence_words_inf%>% # Only consider words with negative and positive score
+  #>5, prints top 15 words based on ratio
+  mutate(word = reorder(word,ratio)) %>%           
+  top_n(15, ratio) %>%
+  ggplot(aes(word,ratio)) +  
+  geom_col() +
+  labs(x = NULL, y = "Ratio of word frequency (pos/neg)") +
+  coord_flip() +
+  theme(text = element_text(size = 17)) +
+  ggtitle("Specific positive words")
+
+#Topic modelling
+LDA_dtm <- review_dtm #Sets the document term matrix for LDA
+LDA_dtm <- as.DocumentTermMatrix(review_dtm) #Formats the document term matrix 
+num_topics_inf <- 2 #Sets the amount of LDA topics
+lda_inf <- LDA(LDA_dtm, k = num_topics_inf, control = list(seed = 777)) 
+#Performs LDA
+lda_inf_terms <- terms(lda_inf, 10) #Sets the amount of LDA terms to show
+tidy_lda_inf <- tidy(lda_inf) #Terns the LDA output to the tidy format 
+
+for (i in 1:num_topics_inf) {
+  cat(sprintf("Top terms for topic %d:\n", i))
+  print(lda_inf_terms[, i])
+  cat("\n")
+} #Peints the top 10 terms per topic
+
+top_terms_inf <- tidy_lda_inf %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) #Arranges and prints the top 10 terms per topic
+#from the tidy LDA format
+
+ggplot(top_terms_inf, aes(reorder(term, beta), beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  labs(title = "Top 10 terms in each LDA topic",
+       x = "Term",
+       y = "Beta") +
+  theme_minimal() #prints the 10 terms in each LDA topic in a plot 
+```
+
